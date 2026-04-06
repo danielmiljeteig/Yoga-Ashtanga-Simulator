@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>YOGA Ashtanga Simulator</title>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #2d2d2d; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+</style>
+</head>
+<body>
+<script>
+// =============================================================================
+// YOGA ASHTANGA SIMULATOR — v2
+// =============================================================================
+// Hold Q/W/E/A/D to push body parts toward the ghost pose. Release = they sink.
+// Get all 5 snapped → press SPACE to start the 5-breath hold.
+// During hold, gravity fights you — keep pressing keys to survive!
+// M = toggle music. N = next pose. R = retry.
+// =============================================================================
+
+const W = 960, H = 660, GROUND = 520;
+
+// ---- CONTROLS ----
+const CP = [
+  { id: 'handL', label: 'L.HAND', kb: 'Q', col: '#4499ff' },
+  { id: 'hip',   label: 'HIPS',   kb: 'W', col: '#ff9933' },
+  { id: 'handR', label: 'R.HAND', kb: 'E', col: '#4499ff' },
+  { id: 'footL', label: 'L.FOOT', kb: 'A', col: '#44cc77' },
+  { id: 'footR', label: 'R.FOOT', kb: 'D', col: '#44cc77' },
+];
+
+// ---- BODY (bone lengths) ----
+const B = { spine:105, neck:30, uArm:72, lArm:66, shW:24, uLeg:82, lLeg:74, hipW:13 };
+const LW = { torso:30, neck:18, uArm:15, lArm:13, uLeg:19, lLeg:16 };
+
+// ---- POSES ----
+const STAND = {
+  hip:{x:460,y:GROUND-155}, handL:{x:438,y:GROUND-60}, handR:{x:482,y:GROUND-60},
+  footL:{x:445,y:GROUND}, footR:{x:475,y:GROUND},
+};
+const COLLAPSED = {
+  hip:{x:470,y:GROUND-25}, handL:{x:390,y:GROUND-3}, handR:{x:550,y:GROUND-3},
+  footL:{x:410,y:GROUND}, footR:{x:530,y:GROUND},
+};
+const DD = {
+  hip:{x:470,y:GROUND-215}, handL:{x:280,y:GROUND-3}, handR:{x:305,y:GROUND-3},
+  footL:{x:610,y:GROUND-2}, footR:{x:635,y:GROUND-2},
+};
+// WARRIOR I: Hip low (deep lunge), torso upright, arms reaching up.
+// Hip y=390, chest≈285, shoulders≈285. Arms=138px, so hands max at ≈155.
+// Feet: front foot under knee, back foot far behind with straight leg.
+const W1 = {
+  hip:{x:460,y:GROUND-125},      // hips low in the lunge
+  handL:{x:450,y:GROUND-260},    // arms up, within arm reach of shoulders
+  handR:{x:470,y:GROUND-260},
+  footL:{x:410,y:GROUND-2},      // front foot — knee bends over it
+  footR:{x:590,y:GROUND-2},      // back foot — extended behind
+};
+const POSES = [
+  { name:'Downward Facing Dog', sans:'Adho Mukha Svanasana', target:DD, breaths:5 },
+  { name:'Warrior I', sans:'Virabhadrasana I', target:W1, breaths:5 },
+];
+
+// ---- QUOTES ----
+const Q_IDLE = [
+  '"The body is your temple.\nKeep it pure and clean."',
+  '"Inhale the future,\nexhale the past."',
+  '"The pose begins when\nyou want to leave it."',
+  '"Breathe, and let go."',
+  '"Stillness is where\ncreativity and solutions\nare found."',
+  '"Be where you are,\nnot where you think\nyou should be."',
+  '"Do your practice\nand all is coming."',
+  '"Your body can do it.\nIt\'s your mind you need\nto convince."',
+];
+const Q_SNAP = ['"Yes! Feel it."','"Good. Hold that."','"Beautiful form."','"Your body remembers."'];
+const Q_FAIL = ['"Fall seven times,\nstand up eight."','"Every stumble\nis a step forward."','"Try again.\nFail better."'];
+const Q_WIN = ['"Namaste.\nThe light in me\nhonors the light in you."','"You did it.\nBreathe in your victory."','"The body achieves\nwhat the mind believes."'];
+
+// ---- IK ----
+function ik(root, tgt, lA, lB, bend) {
+  const dx=tgt.x-root.x, dy=tgt.y-root.y;
+  const d=Math.sqrt(dx*dx+dy*dy) || 0.01; // prevent division by zero
+  if (d >= lA+lB-1) { const t=lA/(lA+lB); return {x:root.x+dx*t, y:root.y+dy*t}; }
+  const ed=Math.max(d, Math.abs(lA-lB)+1);
+  const ca=Phaser.Math.Clamp((lA*lA+ed*ed-lB*lB)/(2*lA*ed), -1, 1);
+  const aa=Math.acos(ca);
+  const ba=Math.atan2(dy,dx), ja=ba+aa*bend;
+  const rx=root.x+Math.cos(ja)*lA, ry=root.y+Math.sin(ja)*lA;
+  // NaN guard
+  if(isNaN(rx)||isNaN(ry)) return {x:(root.x+tgt.x)/2, y:(root.y+tgt.y)/2};
+  return {x:rx, y:ry};
+}
+
+function skel(cp) {
+  const s={};
+  s.hip={x:cp.hip.x, y:cp.hip.y};
+
+  // Spine direction: look at where the hands are relative to the hip.
+  // If hands are far below hip (DD), spine tilts toward them.
+  // If hands are above hip (Warrior I), spine stays upright.
+  const hx=(cp.handL.x+cp.handR.x)/2, hy=(cp.handL.y+cp.handR.y)/2;
+  const handsBelow = hy > s.hip.y; // true for DD, false for Warrior I
+  const hipHeight = GROUND - s.hip.y; // how high off ground
+
+  let spa; // spine angle
+  if (handsBelow && hipHeight > 80) {
+    // DD-like: spine angles from hip toward hands
+    const ta = Math.atan2(hy - s.hip.y, hx - s.hip.x);
+    const inv = Phaser.Math.Clamp(hipHeight / 140, 0, 1);
+    // Blend from upright toward hands
+    let diff = ta - (-Math.PI/2);
+    if (diff > Math.PI) diff -= Math.PI*2;
+    else if (diff < -Math.PI) diff += Math.PI*2;
+    spa = -Math.PI/2 + diff * inv * 0.93;
+  } else {
+    // Upright pose (Warrior I, standing, etc): spine straight up
+    // Slight lean toward hand midpoint for natural look
+    const lean = Phaser.Math.Clamp((hx - s.hip.x) / 300, -0.15, 0.15);
+    spa = -Math.PI/2 + lean;
+  }
+
+  if (isNaN(spa)) spa = -Math.PI/2; // safety
+
+  s.chest={x:s.hip.x+Math.cos(spa)*B.spine, y:s.hip.y+Math.sin(spa)*B.spine};
+  s.neck={x:s.chest.x+Math.cos(spa)*B.neck*0.55, y:s.chest.y+Math.sin(spa)*B.neck*0.55};
+  s.head={x:s.chest.x+Math.cos(spa)*B.neck, y:s.chest.y+Math.sin(spa)*B.neck};
+  const pa=spa+Math.PI/2;
+  s.shL={x:s.chest.x-Math.cos(pa)*B.shW, y:s.chest.y-Math.sin(pa)*B.shW};
+  s.shR={x:s.chest.x+Math.cos(pa)*B.shW, y:s.chest.y+Math.sin(pa)*B.shW};
+  // Elbow bend: if hand is above shoulder, bend outward; else bend backward
+  const elbBL = cp.handL.y < s.shL.y ? 1 : -1;
+  const elbBR = cp.handR.y < s.shR.y ? -1 : 1;
+  s.elbL=ik(s.shL, cp.handL, B.uArm, B.lArm, elbBL);
+  s.elbR=ik(s.shR, cp.handR, B.uArm, B.lArm, elbBR);
+  s.handL={x:cp.handL.x, y:cp.handL.y}; s.handR={x:cp.handR.x, y:cp.handR.y};
+  s.hipL={x:s.hip.x-B.hipW, y:s.hip.y}; s.hipR={x:s.hip.x+B.hipW, y:s.hip.y};
+  // Knee bend: toward the front (toward hands/face direction)
+  const knBL = cp.footL.x < s.hip.x ? 1 : -1;
+  const knBR = cp.footR.x < s.hip.x ? 1 : -1;
+  s.knL=ik(s.hipL, cp.footL, B.uLeg, B.lLeg, knBL);
+  s.knR=ik(s.hipR, cp.footR, B.uLeg, B.lLeg, knBR);
+  s.footL={x:cp.footL.x, y:cp.footL.y}; s.footR={x:cp.footR.x, y:cp.footR.y};
+  return s;
+}
+const BONES=[
+  {a:'hip',b:'chest',w:LW.torso},{a:'chest',b:'neck',w:LW.neck},
+  {a:'shL',b:'elbL',w:LW.uArm},{a:'elbL',b:'handL',w:LW.lArm},
+  {a:'shR',b:'elbR',w:LW.uArm},{a:'elbR',b:'handR',w:LW.lArm},
+  {a:'hipL',b:'knL',w:LW.uLeg},{a:'knL',b:'footL',w:LW.lLeg},
+  {a:'hipR',b:'knR',w:LW.uLeg},{a:'knR',b:'footR',w:LW.lLeg},
+];
+
+// ---- AUDIO ----
+let actx=null;
+function ac(){if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();return actx;}
+function beep(f,d,v){const c=ac(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(v||.08,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+d);o.start();o.stop(c.currentTime+d);}
+function sfxSnap(){beep(880,.08,.1);}
+function sfxLock(){beep(523,.15,.1);setTimeout(()=>beep(659,.15,.08),100);}
+function sfxWin(){beep(523,.2,.1);setTimeout(()=>beep(659,.2,.1),150);setTimeout(()=>beep(784,.3,.1),300);}
+function sfxFail(){beep(220,.3,.1);setTimeout(()=>beep(180,.4,.1),200);}
+function sfxIn(){beep(396,.5,.02);}
+function sfxOut(){beep(330,.5,.02);}
+function sfxBreathDone(){beep(660,.12,.06);setTimeout(()=>beep(880,.12,.04),80);}
+
+// ---- MUSIC ----
+let mPlaying=false, mNodes=[];
+function mStart(){
+  if(mPlaying)return; mPlaying=true; const c=ac();
+  const m=c.createGain(); m.gain.value=0; m.connect(c.destination);
+  m.gain.linearRampToValueAtTime(.12,c.currentTime+3);
+  [130.81,196,261.63].forEach((f,i)=>{
+    const o=c.createOscillator(),g=c.createGain(),l=c.createOscillator(),lg=c.createGain();
+    o.type='sine';o.frequency.value=f;l.type='sine';l.frequency.value=.15+i*.08;
+    lg.gain.value=f*.003;l.connect(lg);lg.connect(o.frequency);
+    g.gain.value=i===0?.4:i===1?.25:.2;o.connect(g);g.connect(m);o.start();l.start();
+    mNodes.push(o,l,g,lg);
+  });
+  function bowl(){
+    if(!mPlaying)return;const c2=ac();
+    const f=[261.63,293.66,329.63,392,440,523.25][Math.floor(Math.random()*6)];
+    const o=c2.createOscillator(),g=c2.createGain();o.type='sine';o.frequency.value=f;
+    g.gain.setValueAtTime(.06,c2.currentTime);g.gain.exponentialRampToValueAtTime(.001,c2.currentTime+4);
+    o.connect(g);g.connect(m);o.start();o.stop(c2.currentTime+4);
+    const o2=c2.createOscillator(),g2=c2.createGain();o2.type='sine';o2.frequency.value=f*3;
+    g2.gain.setValueAtTime(.015,c2.currentTime);g2.gain.exponentialRampToValueAtTime(.001,c2.currentTime+3);
+    o2.connect(g2);g2.connect(m);o2.start();o2.stop(c2.currentTime+3);
+    setTimeout(bowl,3000+Math.random()*6000);
+  }
+  setTimeout(bowl,2000); mNodes.push(m);
+}
+function mStop(){if(!mPlaying)return;mPlaying=false;const c=ac();mNodes.forEach(n=>{try{if(n.gain)n.gain.linearRampToValueAtTime(0,c.currentTime+1);}catch(e){}try{n.stop&&n.stop(c.currentTime+1.5);}catch(e){}});mNodes=[];}
+
+const ST={SETUP:0,LOCK:1,HOLD:2,WIN:3,FAIL:4};
+
+// ===========================================================================
+class Game extends Phaser.Scene {
+  constructor(){super('Game');}
+
+  create(){
+    this.pi=this.registry.get('pi')||0;
+    if(this.pi>=POSES.length)this.pi=0;
+    this.pose=POSES[this.pi];
+    this.st=ST.SETUP;
+    this.strain=0; this.breathN=0; this.bPhase='in';
+    this.breathFill=0; this.breathDir=1; this.breathWindow=false; this.breathHit=false;
+    this._breathTimeout=null; this._breathLabel=null;
+    this.t0=this.time.now; this.tHold=0;
+    this.score=this.registry.get('sc')||0;
+    this.poseScore=0;
+
+    // Control point positions + velocities
+    this.p={}; this.v={};
+    for(const c of CP){
+      this.p[c.id]={x:STAND[c.id].x, y:STAND[c.id].y};
+      this.v[c.id]={x:0,y:0};
+    }
+    this.snapped={}; this.pulse={}; this.held={};
+    for(const c of CP){this.snapped[c.id]=false;this.pulse[c.id]=0;this.held[c.id]=false;}
+
+    this.sk=skel(this.p); this.ghostSk=skel(this.pose.target);
+
+    // Graphics layers
+    this.gBg=this.add.graphics().setDepth(0);
+    this.gMentor=this.add.graphics().setDepth(1);
+    this.gGhost=this.add.graphics().setDepth(2);
+    this.gBody=this.add.graphics().setDepth(5);
+    this.gUI=this.add.graphics().setDepth(8);
+    this.gBreath=this.add.graphics().setDepth(7);
+
+    this.makeTextures();
+    this.drawBg();
+    this.drawMentor();
+    // Wisdom text (near mentor)
+    this.wisdomTxt=this.add.text(14,GROUND+20,'',{fontFamily:'Georgia,serif',fontSize:'11px',color:'#aaddaa',fontStyle:'italic',wordWrap:{width:200}}).setDepth(20).setAlpha(.7);
+    this.buildUI();
+    this.bindKeys();
+
+    this.ghostA=0;
+    this.tweens.add({targets:this, ghostA:1, duration:1200, delay:400});
+
+    this.qIdx=0;
+    this.showWisdom(Q_IDLE[0]);
+    this.quoteTimer=this.time.addEvent({delay:8000,loop:true,callback:()=>{
+      if(this.st<=ST.HOLD){this.qIdx=(this.qIdx+1)%Q_IDLE.length;this.showWisdom(Q_IDLE[this.qIdx]);}
+    }});
+
+    // Music on first key
+    this.mStarted=false;
+    this.input.keyboard.on('keydown',()=>{if(!this.mStarted){this.mStarted=true;mStart();}});
+  }
+
+  makeTextures(){
+    // Only create textures once (they persist across scene restarts)
+    if(!this.textures.exists('pt')){
+      let g=this.add.graphics();g.fillStyle(0xffffff);g.fillCircle(3,3,3);g.generateTexture('pt',6,6);g.destroy();
+      g=this.add.graphics();g.fillStyle(0xfff8e0);g.fillCircle(2,2,2);g.generateTexture('dust',4,4);g.destroy();
+      g=this.add.graphics();g.fillStyle(0xcccccc);g.fillCircle(3,3,3);g.generateTexture('smoke',6,6);g.destroy();
+      g=this.add.graphics();g.fillStyle(0x8888ff);g.fillCircle(2,2,2);g.generateTexture('mist',4,4);g.destroy();
+      [0xff6b6b,0xffd93d,0x6bcb77,0x4d96ff,0xff8c32,0xc77dff].forEach((c,i)=>{
+        const cg=this.add.graphics();cg.fillStyle(c);cg.fillRect(0,0,8,5);cg.generateTexture(`cf${i}`,8,5);cg.destroy();
+      });
+    }
+    this.snapE=this.add.particles(0,0,'pt',{speed:{min:30,max:80},scale:{start:.6,end:0},lifespan:400,tint:0x44ff88,frequency:-1,quantity:8}).setDepth(10);
+    this.sweatE=this.add.particles(0,0,'pt',{speed:{min:15,max:50},angle:{min:220,max:320},scale:{start:.5,end:0},lifespan:700,tint:0x88ccff,frequency:-1,quantity:2}).setDepth(10);
+    this.breathE=this.add.particles(0,0,'pt',{speed:{min:8,max:20},angle:{min:240,max:300},scale:{start:.6,end:0},lifespan:500,tint:0xffffff,alpha:{start:.5,end:0},frequency:-1,quantity:3}).setDepth(10);
+    // Floating forest particles (pollen/fireflies)
+    this.add.particles(0,0,'dust',{x:{min:0,max:W},y:{min:0,max:GROUND-30},speedX:{min:-3,max:3},speedY:{min:-5,max:-1},scale:{min:.3,max:1},alpha:{min:.08,max:.25},lifespan:{min:6000,max:12000},frequency:350,quantity:1,tint:[0xddeebb,0xccddaa,0xeeff88]}).setDepth(3);
+  }
+
+  // ---- BACKGROUND: FOREST WITH WATERFALL ----
+  drawBg(){
+    const g=this.gBg;
+
+    // Sky gradient (top=pale blue, mid=soft green-blue, bottom=forest green)
+    for(let y=0;y<GROUND+10;y++){
+      const t=y/(GROUND+10);
+      const r=Math.floor(Phaser.Math.Linear(160,45,t));
+      const gr=Math.floor(Phaser.Math.Linear(200,85,t));
+      const b=Math.floor(Phaser.Math.Linear(220,55,t));
+      g.fillStyle(Phaser.Display.Color.GetColor(r,gr,b));g.fillRect(0,y,W,1);
+    }
+
+    // Distant mountains
+    g.fillStyle(0x3a5a3a,.4);
+    g.beginPath();g.moveTo(0,180);g.lineTo(120,80);g.lineTo(250,140);g.lineTo(380,60);g.lineTo(500,120);g.lineTo(650,50);g.lineTo(780,100);g.lineTo(900,70);g.lineTo(W,150);g.lineTo(W,250);g.lineTo(0,250);g.closePath();g.fillPath();
+    g.fillStyle(0x2a4a2a,.3);
+    g.beginPath();g.moveTo(0,220);g.lineTo(150,150);g.lineTo(300,190);g.lineTo(450,130);g.lineTo(600,170);g.lineTo(750,120);g.lineTo(W,180);g.lineTo(W,280);g.lineTo(0,280);g.closePath();g.fillPath();
+
+    // Sun glow (upper right)
+    g.fillStyle(0xffeeaa,.12);g.fillCircle(W-150,60,120);
+    g.fillStyle(0xffeeaa,.06);g.fillCircle(W-150,60,200);
+    g.fillStyle(0xffffff,.08);g.fillCircle(W-150,60,40);
+
+    // Background trees (dark silhouettes, far)
+    const treeFar=[[50,280,35],[130,260,40],[220,270,30],[350,255,45],[500,265,35],[620,250,40],[780,260,38],[870,270,32]];
+    for(const[tx,ty,ts]of treeFar){
+      g.fillStyle(0x1a3a1a,.6);
+      // Trunk
+      g.fillRect(tx-3,ty,6,40);
+      // Canopy (layered triangles)
+      g.fillTriangle(tx,ty-ts*1.2,tx-ts*.8,ty+5,tx+ts*.8,ty+5);
+      g.fillTriangle(tx,ty-ts*.7,tx-ts*.6,ty+15,tx+ts*.6,ty+15);
+    }
+
+    // Midground trees (green, medium detail)
+    const treeMid=[[30,340,50],[160,320,55],[320,330,45],[700,310,60],[850,325,48]];
+    for(const[tx,ty,ts]of treeMid){
+      g.fillStyle(0x2a4020);g.fillRect(tx-4,ty,8,50);
+      g.fillStyle(0x3a6030,.9);
+      g.fillTriangle(tx,ty-ts,tx-ts*.7,ty+8,tx+ts*.7,ty+8);
+      g.fillStyle(0x2a5025,.8);
+      g.fillTriangle(tx,ty-ts*.6,tx-ts*.55,ty+20,tx+ts*.55,ty+20);
+      g.fillStyle(0x4a7a40,.7);
+      g.fillTriangle(tx,ty-ts*1.1,tx-ts*.5,ty,tx+ts*.5,ty);
+    }
+
+    // Distant waterfall (far background, subtle)
+    g.fillStyle(0xddeeff,.12);g.fillRect(W-130,100,8,GROUND-100);
+    g.fillStyle(0xeef5ff,.08);g.fillRect(W-127,100,4,GROUND-100);
+    g.fillStyle(0x66aacc,.08);g.fillEllipse(W-126,GROUND,40,8);
+
+    // Large tree on the right
+    g.fillStyle(0x3a2a18);g.fillRect(W-80,GROUND-120,20,125); // trunk
+    g.fillStyle(0x4a3a20);g.fillRect(W-78,GROUND-120,16,125);
+    g.fillStyle(0x2a5a20,.9);g.fillCircle(W-70,GROUND-150,50);
+    g.fillStyle(0x3a7a30,.8);g.fillCircle(W-90,GROUND-130,35);
+    g.fillStyle(0x3a6a28,.7);g.fillCircle(W-50,GROUND-135,40);
+    g.fillStyle(0x4a8a38,.6);g.fillCircle(W-70,GROUND-170,30);
+
+    // Foreground bushes and ferns
+    const bushes=[[20,GROUND-5,30],[80,GROUND,25],[180,GROUND-3,20],[W-180,GROUND-2,22],[W-40,GROUND,18]];
+    for(const[bx,by,bs]of bushes){
+      g.fillStyle(0x3a6a2a,.8);
+      g.fillCircle(bx,by-bs*.4,bs*.6);g.fillCircle(bx-bs*.4,by-bs*.2,bs*.4);g.fillCircle(bx+bs*.4,by-bs*.2,bs*.5);
+      g.fillStyle(0x4a8a3a,.6);
+      g.fillCircle(bx+bs*.2,by-bs*.5,bs*.35);
+    }
+
+    // Ground (earthy forest floor)
+    g.fillStyle(0x3a5520);g.fillRect(0,GROUND+3,W,H-GROUND);
+    g.fillStyle(0x2a4518,.6);g.fillRect(0,GROUND+3,W,6);
+    // Grass blades along ground line
+    g.fillStyle(0x5a9a40,.4);
+    for(let i=0;i<60;i++){const gx=i*16+Math.random()*8;
+      g.fillTriangle(gx,GROUND+3,gx-3,GROUND-4-Math.random()*6,gx+3,GROUND+3);}
+
+    // Yoga mat on grass
+    g.fillStyle(0x000000,.06);g.fillRoundedRect(198,GROUND+1,524,14,5);
+    g.fillStyle(0x7a5540);g.fillRoundedRect(200,GROUND-3,520,13,4); // cork/brown mat for forest
+    g.fillStyle(0x9a7560);g.fillRoundedRect(202,GROUND-1,516,9,3);
+    g.fillStyle(0x8a6550,.4);g.fillRect(210,GROUND+2,500,1);
+
+    // Small flowers scattered
+    const flowers=[[100,GROUND-2,0xff6688],[250,GROUND,0xffaa44],[680,GROUND-1,0xcc88ff],[780,GROUND,0xff8866]];
+    for(const[fx,fy,fc]of flowers){
+      g.fillStyle(0x3a7a2a);g.fillRect(fx,fy-6,1,6);
+      g.fillStyle(fc,.8);g.fillCircle(fx,fy-8,3);
+      g.fillStyle(0xffee88);g.fillCircle(fx,fy-8,1.5);
+    }
+  }
+
+  // ---- YOGI MENTOR (sitting lotus on the left) ----
+  drawMentor(){
+    const g=this.gMentor,mx=75,my=GROUND,sf=0xc0825a,sd=0x9a6540;
+    // Small mat
+    g.fillStyle(0x7a5540,.5);g.fillRoundedRect(mx-32,my-1,64,7,2);
+    // Crossed legs
+    g.lineStyle(11,sd);
+    g.beginPath();g.moveTo(mx-14,my-10);g.lineTo(mx+8,my-4);g.strokePath();
+    g.beginPath();g.moveTo(mx+14,my-10);g.lineTo(mx-8,my-4);g.strokePath();
+    g.lineStyle(9,sf);
+    g.beginPath();g.moveTo(mx-14,my-10);g.lineTo(mx+8,my-4);g.strokePath();
+    g.beginPath();g.moveTo(mx+14,my-10);g.lineTo(mx-8,my-4);g.strokePath();
+    // Torso
+    g.lineStyle(16,sd);g.beginPath();g.moveTo(mx,my-10);g.lineTo(mx,my-52);g.strokePath();
+    g.lineStyle(13,sf);g.beginPath();g.moveTo(mx,my-10);g.lineTo(mx,my-52);g.strokePath();
+    // Arms on knees
+    g.lineStyle(8,sd);
+    g.beginPath();g.moveTo(mx-10,my-44);g.lineTo(mx-22,my-22);g.lineTo(mx-16,my-12);g.strokePath();
+    g.beginPath();g.moveTo(mx+10,my-44);g.lineTo(mx+22,my-22);g.lineTo(mx+16,my-12);g.strokePath();
+    g.lineStyle(6,sf);
+    g.beginPath();g.moveTo(mx-10,my-44);g.lineTo(mx-22,my-22);g.lineTo(mx-16,my-12);g.strokePath();
+    g.beginPath();g.moveTo(mx+10,my-44);g.lineTo(mx+22,my-22);g.lineTo(mx+16,my-12);g.strokePath();
+    // Head
+    g.fillStyle(sd);g.fillCircle(mx,my-63,12);
+    g.fillStyle(sf);g.fillCircle(mx,my-63,10);
+    // Closed eyes
+    g.lineStyle(1.2,sd,.6);
+    g.beginPath();g.arc(mx-3,my-64,2.5,0,Math.PI);g.strokePath();
+    g.beginPath();g.arc(mx+3,my-64,2.5,0,Math.PI);g.strokePath();
+    // Smile
+    g.lineStyle(1,sd,.4);g.beginPath();g.arc(mx,my-59,3,.3,Math.PI-.3);g.strokePath();
+    // Hair bun
+    g.fillStyle(0x3a2a1a);g.fillCircle(mx,my-75,5);
+  }
+
+  showWisdom(t){
+    if(!this.wisdomTxt) return;
+    // Strip quotes/newlines for compact display
+    this.wisdomTxt.setText(t.replace(/\n/g,' '));
+    this.wisdomTxt.setAlpha(0);
+    this.tweens.add({targets:this.wisdomTxt, alpha:.7, duration:600});
+  }
+
+  // ---- UI ----
+  buildUI(){
+    this.add.text(W/2,10,'YOGA ASHTANGA SIMULATOR',{fontFamily:'Georgia,serif',fontSize:'24px',color:'#5a3e28',fontStyle:'bold'}).setOrigin(.5,0).setDepth(20);
+    this.poseTxt=this.add.text(W/2,38,`Pose ${this.pi+1}/${POSES.length}: ${this.pose.name}  ·  ${this.pose.sans}`,{fontFamily:'Georgia,serif',fontSize:'13px',color:'#8a6a4e'}).setOrigin(.5,0).setDepth(20);
+    this.instrTxt=this.add.text(W/2,H-20,'',{fontFamily:'Arial',fontSize:'14px',color:'#fff',backgroundColor:'#00000066',padding:{x:14,y:5}}).setOrigin(.5,.5).setDepth(20);
+
+    // Key indicators
+    this.kBoxes={};
+    const kx=W/2,ky=70,ks=36,kg=6;
+    const kpos={Q:{x:kx-ks-kg,y:ky},W:{x:kx,y:ky},E:{x:kx+ks+kg,y:ky},A:{x:kx-(ks+kg)/2,y:ky+ks+kg},D:{x:kx+(ks+kg)/2,y:ky+ks+kg}};
+    for(const c of CP){
+      const p=kpos[c.kb]; const col=Phaser.Display.Color.HexStringToColor(c.col).color;
+      this.add.rectangle(p.x,p.y,ks,ks,0x000000,.08).setDepth(20).setStrokeStyle(2,col,.5);
+      this.add.text(p.x,p.y-4,c.kb,{fontFamily:'monospace',fontSize:'16px',fontStyle:'bold',color:c.col}).setOrigin(.5).setDepth(21);
+      this.add.text(p.x,p.y+12,c.label,{fontFamily:'Arial',fontSize:'8px',color:'#888'}).setOrigin(.5).setDepth(21);
+      this.kBoxes[c.id]=p;
+    }
+
+    // Checklist
+    this.chk={};let cy=68;
+    this.add.text(W-14,cy,'POSE',{fontFamily:'Arial',fontSize:'10px',color:'#5a3e28',fontStyle:'bold'}).setOrigin(1,0).setDepth(20);cy+=16;
+    for(const c of CP){this.chk[c.id]=this.add.text(W-14,cy,`○ ${c.label}`,{fontFamily:'Arial',fontSize:'12px',color:'#999'}).setOrigin(1,0).setDepth(20);cy+=18;}
+
+    // Breath counter
+    this.breathTxt=this.add.text(W/2,130,'',{fontFamily:'Georgia,serif',fontSize:'28px',color:'#5a3e28',fontStyle:'bold'}).setOrigin(.5,0).setDepth(20);
+    // Live score
+    this.scoreTxt=this.add.text(W-14,38,'',{fontFamily:'Arial',fontSize:'13px',color:'#7a5a3e'}).setOrigin(1,0).setDepth(20);
+    // Strain
+    this.strLbl=this.add.text(W/2-100,GROUND+18,'STRAIN',{fontFamily:'Arial',fontSize:'10px',color:'#5a3e28',fontStyle:'bold'}).setDepth(20).setVisible(false);
+    this.strBg=this.add.rectangle(W/2-100,GROUND+34,200,10,0x000000,.1).setOrigin(0,0).setDepth(20).setVisible(false);
+    this.strFill=this.add.rectangle(W/2-100,GROUND+34,0,10,0xff4444).setOrigin(0,0).setDepth(20).setVisible(false);
+
+    // Pose dots
+    if(POSES.length>1){const dy=56,dg=18,dx=W/2-((POSES.length-1)*dg)/2;
+      for(let i=0;i<POSES.length;i++){const done=i<this.pi,cur=i===this.pi;
+        const dot=this.add.circle(dx+i*dg,dy,cur?5:3,done?0x4caf50:cur?0xff9933:0xcccccc,done||cur?1:.5).setDepth(20);
+        if(cur)dot.setStrokeStyle(2,0xff9933,.7);}}
+
+    this.add.text(W/2,GROUND+50,'Q W E A D = lift body · Space = lock / breathe · M = music · N = next · R = retry',{fontFamily:'Arial',fontSize:'11px',color:'#9a7a5e'}).setOrigin(.5,0).setDepth(20);
+    this.retryBtn=this.add.text(W/2,H/2+90,'  Press R  ',{fontFamily:'Arial',fontSize:'18px',fontStyle:'bold',color:'#fff',backgroundColor:'#e67e22',padding:{x:20,y:10}}).setOrigin(.5).setDepth(30).setVisible(false).setInteractive({useHandCursor:true});
+    this.retryBtn.on('pointerdown',()=>{this.registry.set('pi',this.pi);this.registry.set('sc',this.score);this.scene.restart();});
+  }
+
+  // ---- KEYS ----
+  bindKeys(){
+    for(const c of CP){
+      const k=this.input.keyboard.addKey(c.kb);
+      k.on('down',()=>{this.held[c.id]=true;});
+      k.on('up',()=>{this.held[c.id]=false;});
+    }
+    this.input.keyboard.on('keydown-SPACE',(e)=>{
+      e.preventDefault();
+      if(this.st===ST.LOCK) this.startHold();
+      else if(this.st===ST.HOLD) this.onBreathPress();
+    });
+    this.input.keyboard.on('keydown-R',()=>{if(this.st>=ST.WIN){this.registry.set('pi',this.pi);this.registry.set('sc',this.score);this.scene.restart();}});
+    this.input.keyboard.on('keydown-N',()=>{if(this.st===ST.WIN){this.registry.set('pi',this.pi+1);this.registry.set('sc',this.score);this.scene.restart();}});
+    this.input.keyboard.on('keydown-M',()=>{mPlaying?mStop():mStart();});
+  }
+
+  // ---- PHYSICS ----
+  physics(dt){
+    const tgt=this.pose.target;
+    const isHold=this.st===ST.HOLD;
+    // Gravity ramps up each breath during hold
+    const breathMul=isHold? 1 + this.breathN * 0.3 : 1;
+    const liftSpd=isHold? 3.0 : 4.0; // slightly harder to push during hold
+    const friction=0.88; // velocity damping
+    const snapDist=25; // magnetic pull range
+
+    for(const c of CP){
+      const p=this.p[c.id], v=this.v[c.id], t=tgt[c.id];
+      const rest=COLLAPSED[c.id];
+
+      if(this.held[c.id] && this.st<ST.WIN){
+        // Push toward target
+        const dx=t.x-p.x, dy=t.y-p.y, d=Math.sqrt(dx*dx+dy*dy);
+        if(d>1){
+          // Magnetic acceleration: faster when close (snappy feel)
+          const mag=d<snapDist? liftSpd*1.5 : liftSpd;
+          const ease=Math.min(mag, d*0.1);
+          v.x+=(dx/d)*ease*dt*60;
+          v.y+=(dy/d)*ease*dt*60;
+        }
+      } else if(this.st<ST.WIN){
+        // Gravity pull toward rest position
+        const grav=(0.6+this.strain*0.8)*breathMul;
+        const dx=rest.x-p.x, dy=rest.y-p.y, d=Math.sqrt(dx*dx+dy*dy);
+        if(d>1){
+          v.x+=(dx/d)*grav*dt*30;
+          v.y+=(dy/d)*grav*dt*30;
+        }
+        // Also pure downward gravity
+        v.y+=0.02*60*dt*breathMul;
+      }
+
+      // Apply velocity with friction
+      v.x*=friction; v.y*=friction;
+      p.x+=v.x*dt*60; p.y+=v.y*dt*60;
+      // NaN safety — reset to standing if anything goes wrong
+      if(isNaN(p.x)||isNaN(p.y)){p.x=STAND[c.id].x;p.y=STAND[c.id].y;v.x=0;v.y=0;}
+      p.y=Math.min(p.y,GROUND);
+      p.x=Phaser.Math.Clamp(p.x,50,W-50);
+    }
+  }
+
+  // ---- DRAWING ----
+  drawGhost(){
+    const g=this.gGhost;g.clear();if(this.ghostA<.01)return;
+    const a=this.ghostA,s=this.ghostSk;
+    for(const bn of BONES){const ja=s[bn.a],jb=s[bn.b];if(!ja||!jb)continue;
+      g.lineStyle(bn.w+2,0x64c8dc,.06*a);g.beginPath();g.moveTo(ja.x,ja.y);g.lineTo(jb.x,jb.y);g.strokePath();
+      g.lineStyle(bn.w-2,0x64c8dc,.14*a);g.beginPath();g.moveTo(ja.x,ja.y);g.lineTo(jb.x,jb.y);g.strokePath();}
+    g.fillStyle(0x64c8dc,.1*a);g.fillCircle(s.head.x,s.head.y,18);
+    const t=this.pose.target;
+    for(const c of CP){const p=t[c.id],sn=this.snapped[c.id];
+      g.lineStyle(2,sn?0x44ff88:0x64c8dc,(sn?.5:.3)*a);g.strokeCircle(p.x,p.y,sn?15:12);
+      if(sn){g.fillStyle(0x44ff88,.1*a);g.fillCircle(p.x,p.y,15);}}
+  }
+
+  drawBody(){
+    const g=this.gBody;g.clear();
+    this.sk=skel(this.p);
+    let sf=0xd4956b,ss=0xb07850;
+    if(this.st===ST.HOLD&&this.strain>.3){const t=Math.floor(this.strain*60);
+      sf=Phaser.Display.Color.GetColor(Math.min(255,212+t),Math.max(100,149-t),Math.max(80,107-t));}
+    // Breathing aura — pulses with breath fill level
+    if(this.st===ST.HOLD && this.breathFill!==undefined){
+      const bf=this.breathFill||0;
+      const gl=0.03+bf*0.07;
+      const gc=this.strain>.5?0xff8844:this.breathWindow?0x88ffaa:0x88ccff;
+      const cx=(this.sk.hip.x+this.sk.chest.x)/2,cy=(this.sk.hip.y+this.sk.chest.y)/2;
+      g.fillStyle(gc,gl*.5);g.fillCircle(cx,cy,70+bf*20);
+      g.fillStyle(gc,gl*.3);g.fillCircle(cx,cy,100+bf*30);}
+    // Bones
+    for(const bn of BONES){const a=this.sk[bn.a],b=this.sk[bn.b];if(!a||!b)continue;
+      g.lineStyle(bn.w+3,ss,1);g.beginPath();g.moveTo(a.x,a.y);g.lineTo(b.x,b.y);g.strokePath();
+      g.lineStyle(bn.w,sf,1);g.beginPath();g.moveTo(a.x,a.y);g.lineTo(b.x,b.y);g.strokePath();}
+    // Joints
+    for(const jp of['chest','shL','shR','hipL','hipR','elbL','elbR','knL','knR']){
+      const pt=this.sk[jp];if(!pt)continue;g.fillStyle(sf);g.fillCircle(pt.x,pt.y,jp.includes('elb')||jp.includes('kn')?7:8);}
+    // Endpoints
+    for(const ep of['handL','handR','footL','footR']){const pt=this.sk[ep];if(!pt)continue;g.fillStyle(sf);g.fillCircle(pt.x,pt.y,ep[0]==='h'?6:7);g.fillStyle(ss);g.fillCircle(pt.x,pt.y,ep[0]==='h'?4:5);}
+    // Head
+    const hd=this.sk.head,nk=this.sk.neck;
+    if(hd&&nk){g.fillStyle(ss);g.fillCircle(hd.x,hd.y,19);g.fillStyle(sf);g.fillCircle(hd.x,hd.y,17);
+      const fa=Math.atan2(hd.y-nk.y,hd.x-nk.x),px=-Math.sin(fa)*5,py=Math.cos(fa)*5;
+      g.fillStyle(ss);g.fillCircle(hd.x+px+Math.cos(fa)*4,hd.y+py+Math.sin(fa)*4,2.5);
+      g.fillCircle(hd.x-px+Math.cos(fa)*4,hd.y-py+Math.sin(fa)*4,2.5);
+      g.lineStyle(1,ss,.4);g.beginPath();g.arc(hd.x+Math.cos(fa)*6,hd.y+Math.sin(fa)*6,3,.3,Math.PI-.3);g.strokePath();}
+  }
+
+  // Breath visualization — rising/falling bar + pulsing circle at peak
+  drawBreathVis(){
+    const g=this.gBreath;g.clear();
+    if(this.st!==ST.HOLD)return;
+
+    const cx=W/2, cy=165;
+    const barW=120, barH=14, barX=cx-barW/2, barY=cy-barH/2;
+    const fill=this.breathFill||0;
+
+    // Bar background
+    g.fillStyle(0x000000,.1);g.fillRoundedRect(barX-2,barY-2,barW+4,barH+4,4);
+
+    // Fill color: blue during inhale, green at peak (window), fading on exhale
+    let barCol=0x88bbdd;
+    if(this.breathWindow) barCol=this.breathHit?0x44ff88:0xffcc44; // green if hit, yellow if waiting
+    else if(this.bPhase==='out') barCol=0x88bbdd;
+
+    // Filled portion
+    g.fillStyle(barCol,.6);
+    g.fillRoundedRect(barX,barY,Math.floor(barW*fill),barH,3);
+
+    // Border
+    g.lineStyle(2,0xaaaaaa,.3);g.strokeRoundedRect(barX,barY,barW,barH,3);
+
+    // Pulsing glow at peak (press Space prompt)
+    if(this.breathWindow && !this.breathHit){
+      const pulse=.5+.5*Math.sin(this.time.now*.01);
+      g.fillStyle(0xffcc44,.15+.15*pulse);
+      g.fillCircle(cx,cy,30+5*pulse);
+      g.lineStyle(2,0xffcc44,.4+.3*pulse);
+      g.strokeCircle(cx,cy,30+5*pulse);
+    }
+
+    // Breath dots showing completed breaths
+    const dotY=cy+16;
+    for(let i=0;i<this.pose.breaths;i++){
+      const dx=cx-((this.pose.breaths-1)*12)/2+i*12;
+      const done=i<this.breathN;
+      g.fillStyle(done?0x44ff88:0x666666,done?1:.3);
+      g.fillCircle(dx,dotY,3);
+    }
+
+    // Label
+    if(!this._breathLabel){
+      this._breathLabel=this.add.text(cx,cy-18,'',{fontFamily:'Arial',fontSize:'10px',color:'#8ab4c8'}).setOrigin(.5).setDepth(20).setAlpha(.7);
+    }
+    const lbl=this.bPhase==='in'?'INHALE':this.bPhase==='hold'?'SPACE!':'EXHALE';
+    this._breathLabel.setText(lbl);
+    this._breathLabel.setColor(this.breathWindow&&!this.breathHit?'#ffcc44':'#8ab4c8');
+  }
+
+  drawKeyUI(){
+    const g=this.gUI;g.clear();if(this.st>=ST.WIN)return;
+    for(const c of CP){
+      const kb=this.kBoxes[c.id],h=this.held[c.id],sn=this.snapped[c.id];
+      const col=Phaser.Display.Color.HexStringToColor(c.col).color;
+      if(h){g.fillStyle(col,.3);g.fillRoundedRect(kb.x-18,kb.y-18,36,36,6);}
+      if(sn){g.lineStyle(2,0x44ff88,.8);g.strokeRoundedRect(kb.x-18,kb.y-18,36,36,6);}
+      const cp=this.p[c.id],sp=this.pulse[c.id];
+      if(sp>0){g.lineStyle(3,0x44ff88,sp*.6);g.strokeCircle(cp.x,cp.y,12+10*sp);}
+      if(sn){g.fillStyle(0x44ff88,.35);g.fillCircle(cp.x,cp.y,8);}
+      else if(h){g.fillStyle(col,.5);g.fillCircle(cp.x,cp.y,8);g.lineStyle(2,col,.7);g.strokeCircle(cp.x,cp.y,8);}
+      else{g.fillStyle(col,.2);g.fillCircle(cp.x,cp.y,5);}
+    }
+  }
+
+  // ---- SNAP CHECK ----
+  checkSnaps(){
+    const SD=36;let all=true;
+    for(const c of CP){
+      const cur=this.p[c.id],t=this.pose.target[c.id];
+      const d=Phaser.Math.Distance.Between(cur.x,cur.y,t.x,t.y);
+      const was=this.snapped[c.id],is=d<SD;
+      this.snapped[c.id]=is;
+      if(is&&!was){sfxSnap();this.pulse[c.id]=1;this.snapE.setPosition(cur.x,cur.y);this.snapE.explode(8);
+        if(this.st===ST.SETUP)this.showWisdom(Q_SNAP[Math.floor(Math.random()*Q_SNAP.length)]);}
+      this.chk[c.id].setText(is?`● ${c.label}`:`○ ${c.label}`);
+      this.chk[c.id].setColor(is?'#4caf50':'#999');
+      if(!is)all=false;
+    }
+    for(const k of Object.keys(this.pulse))if(this.pulse[k]>0)this.pulse[k]=Math.max(0,this.pulse[k]-.025);
+    return all;
+  }
+
+  alignment(){
+    let t=0;for(const c of CP){const cur=this.p[c.id],tp=this.pose.target[c.id];
+      t+=Math.max(0,1-Phaser.Math.Distance.Between(cur.x,cur.y,tp.x,tp.y)/80);}return t/CP.length;
+  }
+
+  // Clean up timers on scene shutdown (prevents cross-restart leaks)
+  shutdown(){
+    if(this.quoteTimer)this.quoteTimer.remove();
+    if(this._breathTimeout){this._breathTimeout.remove();this._breathTimeout=null;}
+  }
+
+  // ---- UPDATE ----
+  update(time,delta){
+    try {
+      const dt=Math.min(delta/1000, 0.05); // cap dt to prevent huge jumps
+      this.physics(dt);
+      this.drawGhost();this.drawBody();this.drawKeyUI();this.drawBreathVis();
+      const all=this.checkSnaps();
+
+      if(this.st===ST.SETUP){
+        this.instrTxt.setText('Hold keys to lift body parts into the ghost pose!');
+        if(all){this.st=ST.LOCK;beep(520,.1,.08);}
+      } else if(this.st===ST.LOCK){
+        this.instrTxt.setText('All matched! Press SPACE to lock — keep holding!');
+        if(!all)this.st=ST.SETUP;
+      } else if(this.st===ST.HOLD){
+        this.tickHold(dt);
+      }
+    } catch(e) {
+      console.error('Update error:', e);
+    }
+  }
+
+  startHold(){
+    this.st=ST.HOLD;this.tHold=this.time.now;
+    this.breathN=0;this.strain=0;this.poseScore=0;
+    // Breath bar: fills up, press Space at the right time to "breathe"
+    this.breathFill=0;         // 0→1 fills the bar
+    this.breathDir=1;          // 1=inhale (filling), -1=exhale (emptying)
+    this.breathWindow=false;   // true when Space should be pressed
+    this.breathHit=false;      // true if player pressed Space in the window
+    this.bPhase='in';
+    this.strLbl.setVisible(true);this.strBg.setVisible(true);this.strFill.setVisible(true);
+    sfxLock();
+    this.showWisdom('"Now hold...\nPress SPACE to breathe\nwith the rhythm."');
+  }
+
+  onBreathPress(){
+    // Player presses Space during hold — check timing
+    if(this.breathWindow && !this.breathHit){
+      this.breathHit=true;
+      // Good breath!
+      const al=this.alignment();
+      const breathScore=Math.floor(al*100*(1-this.strain));
+      this.poseScore+=breathScore;
+      this.strain=Math.max(0, this.strain-0.12); // breathing reduces strain
+      sfxBreathDone();
+      // Breath particles from head
+      const h=this.sk.head;
+      if(h){this.breathE.setPosition(h.x,h.y-12);this.breathE.explode(6);}
+    } else if(!this.breathWindow){
+      // Bad timing — slight strain penalty
+      this.strain=Math.min(1, this.strain+0.08);
+      beep(200,.1,.06);
+    }
+  }
+
+  tickHold(dt){
+    // Breath bar auto-cycles: fills up (inhale) then empties (exhale)
+    // Speed increases slightly each breath
+    const speed = 0.35 + this.breathN * 0.03;
+    this.breathFill += this.breathDir * speed * dt;
+
+    if(this.breathDir===1 && this.breathFill>=1){
+      // Top of inhale — this is the "press Space" window
+      this.breathFill=1;
+      this.breathWindow=true;
+      this.bPhase='hold';
+      // Auto-transition after a beat if player doesn't press
+      if(!this._breathTimeout){
+        this._breathTimeout=this.time.delayedCall(800,()=>{
+          if(!this.breathHit && this.st===ST.HOLD){
+            // Missed the breath — strain penalty
+            this.strain=Math.min(1, this.strain+0.15);
+          }
+          this.breathDir=-1;
+          this.breathWindow=false;
+          this.breathHit=false;
+          this.bPhase='out';
+          sfxOut();
+          this._breathTimeout=null;
+        });
+      }
+    } else if(this.breathDir===-1 && this.breathFill<=0){
+      // Bottom of exhale — start next inhale
+      this.breathFill=0;
+      this.breathDir=1;
+      this.breathN++;
+      this.bPhase='in';
+      sfxIn();
+      if(this.breathN>=this.pose.breaths){this.onWin();return;}
+    }
+
+    // If player pressed Space during window, immediately start exhale
+    if(this.breathHit && this.breathWindow && this.breathDir===1){
+      if(this._breathTimeout){this._breathTimeout.remove();this._breathTimeout=null;}
+      this.breathDir=-1;
+      this.breathWindow=false;
+      this.bPhase='out';
+      sfxOut();
+    }
+
+    const al=this.alignment();
+    this.strain+=(1-al)*.15*dt;
+    this.strain-=.03*dt*al;
+    this.strain=Phaser.Math.Clamp(this.strain,0,1);
+    this.strFill.setSize(Math.floor(200*this.strain),10);
+    this.strFill.setFillStyle(this.strain>.7?0xff2222:this.strain>.4?0xff8844:0xffaa44);
+
+    if(this.strain>.5&&Math.random()<.06){const h=this.sk.head;if(h){this.sweatE.setPosition(h.x+(Math.random()-.5)*16,h.y);this.sweatE.explode(2);}}
+    if(this.strain>.75)this.cameras.main.shake(30,.001*this.strain);
+    if(this.strain>=1){this.onFail();return;}
+
+    this.breathTxt.setText(`Breath ${this.breathN+1} / ${this.pose.breaths}`);
+    this.scoreTxt.setText(`Score: ${this.poseScore}`);
+    const phaseText = this.bPhase==='in' ? '↑ Inhale...'
+      : this.bPhase==='hold' ? '⬤ Press SPACE to breathe!'
+      : '↓ Exhale...';
+    this.instrTxt.setText(phaseText);
+  }
+
+  onWin(){
+    this.st=ST.WIN;
+    const al=this.alignment();
+    const bonus=Math.floor(al*200);
+    this.poseScore+=bonus;
+    this.score+=this.poseScore;
+    sfxWin();
+    this.instrTxt.setText('');this.breathTxt.setText('');
+    if(this._breathLabel)this._breathLabel.setVisible(false);
+    if(this._breathTimeout){this._breathTimeout.remove();this._breathTimeout=null;}
+    this.gBreath.clear();
+    this.showWisdom(Q_WIN[Math.floor(Math.random()*Q_WIN.length)]);
+
+    const nm=this.add.text(W/2,H/2-75,'Namaste!',{fontFamily:'Georgia,serif',fontSize:'56px',color:'#4caf50',fontStyle:'bold',stroke:'#fff',strokeThickness:5}).setOrigin(.5).setDepth(30).setAlpha(0);
+    this.tweens.add({targets:nm,alpha:1,scaleX:[.3,1],scaleY:[.3,1],duration:500,ease:'Back.easeOut'});
+    this.scoreTxt.setText(`Total: ${this.score}`);
+    this.add.text(W/2,H/2-20,`Pose score: ${this.poseScore}  (${this.breathN} breaths + ${bonus} alignment bonus)`,{fontFamily:'Arial',fontSize:'14px',color:'#5a3e28'}).setOrigin(.5).setDepth(30);
+
+    for(let i=0;i<6;i++){const em=this.add.particles(W/2,-10,`cf${i}`,{x:{min:-W/2,max:W/2},speed:{min:80,max:250},angle:{min:70,max:110},rotate:{min:0,max:360},scale:{start:1,end:.4},lifespan:2800,gravityY:120,quantity:2,frequency:60,maxParticles:25}).setDepth(25);
+      this.time.delayedCall(2800,()=>em.destroy());}
+
+    this.time.delayedCall(1500,()=>{
+      const hasNext=this.pi+1<POSES.length;
+      if(hasNext){this.add.text(W/2,H/2+20,'Press N for next pose  ·  R to retry',{fontFamily:'Arial',fontSize:'15px',color:'#5a3e28',fontStyle:'bold'}).setOrigin(.5).setDepth(30);
+        this.add.text(W/2,H/2+45,`Next: ${POSES[this.pi+1].name}`,{fontFamily:'Georgia,serif',fontSize:'13px',color:'#8a6a4e',fontStyle:'italic'}).setOrigin(.5).setDepth(30);
+      } else {
+        this.add.text(W/2,H/2+20,'All poses complete!',{fontFamily:'Georgia,serif',fontSize:'18px',color:'#4caf50',fontStyle:'bold'}).setOrigin(.5).setDepth(30);
+        this.add.text(W/2,H/2+48,`Final Score: ${this.score}  ·  Press R to restart`,{fontFamily:'Arial',fontSize:'14px',color:'#5a3e28'}).setOrigin(.5).setDepth(30);
+      }
+      this.retryBtn.setVisible(true);
+    });
+  }
+
+  onFail(){
+    this.st=ST.FAIL;sfxFail();
+    for(const k of Object.keys(this.held))this.held[k]=false;
+    // Add collapse velocity
+    for(const c of CP){this.v[c.id].x=(Math.random()-.5)*3;this.v[c.id].y=-4-Math.random()*3;}
+    this.showWisdom(Q_FAIL[Math.floor(Math.random()*Q_FAIL.length)]);
+    this.cameras.main.shake(400,.008);
+    if(this._breathLabel)this._breathLabel.setVisible(false);
+    if(this._breathTimeout){this._breathTimeout.remove();this._breathTimeout=null;}
+    this.gBreath.clear();
+    this.add.text(W/2,H/2-60,'Collapsed!',{fontFamily:'Georgia,serif',fontSize:'42px',color:'#e74c3c',fontStyle:'bold',stroke:'#fff',strokeThickness:4}).setOrigin(.5).setDepth(30);
+    this.instrTxt.setText('');this.breathTxt.setText('');
+    this.time.delayedCall(1200,()=>this.retryBtn.setVisible(true));
+  }
+}
+
+new Phaser.Game({type:Phaser.AUTO,width:W,height:H,backgroundColor:'#f5e6d3',
+  scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH},scene:[Game]});
+</script>
+</body>
+</html>
