@@ -7,7 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a2a1a; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; }
+  body { background: #e8d8c4; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; }
   canvas { image-rendering: auto; }
 </style>
 </head>
@@ -148,26 +148,123 @@ class Game extends Phaser.Scene {
       [0xff6b6b,0xffd93d,0x6bcb77,0x4d96ff,0xff8c32,0xc77dff].forEach((c,i)=>{const cg=this.add.graphics();cg.fillStyle(c);cg.fillRect(0,0,8,5);cg.generateTexture(`cf${i}`,8,5);cg.destroy();});
     }
     this.breathE=this.add.particles(0,0,'pt',{speed:{min:8,max:20},angle:{min:240,max:300},scale:{start:.6,end:0},lifespan:500,tint:0xffffff,alpha:{start:.5,end:0},frequency:-1,quantity:3}).setDepth(10);
-    this.add.particles(0,0,'dust',{x:{min:0,max:W},y:{min:0,max:GND-30},speedX:{min:-3,max:3},speedY:{min:-5,max:-1},scale:{min:.3,max:1},alpha:{min:.08,max:.2},lifespan:{min:6000,max:12000},frequency:400,quantity:1,tint:[0xddeebb,0xccddaa]}).setDepth(3);
+    this.add.particles(0,0,'dust',{x:{min:0,max:W},y:{min:0,max:GND-30},speedX:{min:-3,max:3},speedY:{min:-5,max:-1},scale:{min:.3,max:1},alpha:{min:.08,max:.2},lifespan:{min:6000,max:12000},frequency:400,quantity:1,tint:[0xf0d8b0,0xe0c89a]}).setDepth(3);
   }
 
   // ---- BACKGROUND ----
   drawBg(){
+    // =====================================================================
+    // PALETTE — Soft Dojo (Minimalist Studio Interior)
+    // Wall:   #f5ede0 warm parchment (top)  →  #e8d8c4 warm plaster (horizon)
+    // Floor:  #c4855a terracotta planks A  /  #b87a50 planks B  /  #a06840 separator
+    // Light:  rgba(255,240,200,0.06) ambient god-ray blobs
+    // Mat:    #e07840 base  /  #b85a20 border + OM arc
+    // Beam:   #8a6040 dark wood
+    // Plant:  #6a4020 pot  /  #4a8a3a leaves
+    // =====================================================================
     const g=this.gBg;
-    for(let y=0;y<GND+10;y++){const t=y/(GND+10);g.fillStyle(Phaser.Display.Color.GetColor(Math.floor(Phaser.Math.Linear(160,45,t)),Math.floor(Phaser.Math.Linear(200,85,t)),Math.floor(Phaser.Math.Linear(220,55,t))));g.fillRect(0,y,W,1);}
-    g.fillStyle(0x3a5a3a,.4);g.beginPath();g.moveTo(0,180);g.lineTo(120,80);g.lineTo(250,140);g.lineTo(380,60);g.lineTo(500,120);g.lineTo(650,50);g.lineTo(780,100);g.lineTo(900,70);g.lineTo(W,150);g.lineTo(W,250);g.lineTo(0,250);g.closePath();g.fillPath();
-    g.fillStyle(0x2a4a2a,.3);g.beginPath();g.moveTo(0,220);g.lineTo(150,150);g.lineTo(300,190);g.lineTo(450,130);g.lineTo(600,170);g.lineTo(750,120);g.lineTo(W,180);g.lineTo(W,280);g.lineTo(0,280);g.closePath();g.fillPath();
-    g.fillStyle(0xffeeaa,.1);g.fillCircle(W-150,60,120);
-    const tf=[[50,280,35],[130,260,40],[350,255,45],[620,250,40],[870,270,32]];
-    for(const[tx,ty,ts]of tf){g.fillStyle(0x1a3a1a,.6);g.fillRect(tx-3,ty,6,40);g.fillTriangle(tx,ty-ts*1.2,tx-ts*.8,ty+5,tx+ts*.8,ty+5);}
-    const tm=[[30,340,50],[160,320,55],[320,330,45],[700,310,60],[850,325,48]];
-    for(const[tx,ty,ts]of tm){g.fillStyle(0x2a4020);g.fillRect(tx-4,ty,8,50);g.fillStyle(0x3a6030,.9);g.fillTriangle(tx,ty-ts,tx-ts*.7,ty+8,tx+ts*.7,ty+8);}
-    g.fillStyle(0x3a2a18);g.fillRect(W-80,GND-120,20,125);g.fillStyle(0x2a5a20,.9);g.fillCircle(W-70,GND-150,50);g.fillStyle(0x3a7a30,.8);g.fillCircle(W-90,GND-130,35);
-    g.fillStyle(0x3a5520);g.fillRect(0,GND+3,W,H-GND);
-    g.fillStyle(0x5a9a40,.4);for(let i=0;i<60;i++){const gx=i*16+Math.random()*8;g.fillTriangle(gx,GND+3,gx-3,GND-4-Math.random()*6,gx+3,GND+3);}
-    g.fillStyle(0x000000,.06);g.fillRoundedRect(198,GND+1,564,14,5);
-    g.fillStyle(0x7a5540);g.fillRoundedRect(200,GND-3,560,13,4);
-    g.fillStyle(0x9a7560);g.fillRoundedRect(202,GND-1,556,9,3);
+    const groundY=GND; // y where wall meets floor
+
+    // ------------------------------------------------------------------
+    // WALL: warm gradient, top 60% of scene (rows 0 → groundY)
+    // lerp from #f5ede0 → #e8d8c4
+    // ------------------------------------------------------------------
+    for(let y=0;y<groundY;y++){
+      const t=y/groundY;
+      const r=Math.floor(Phaser.Math.Linear(245,232,t));
+      const gv=Math.floor(Phaser.Math.Linear(237,216,t));
+      const b=Math.floor(Phaser.Math.Linear(224,196,t));
+      g.fillStyle(Phaser.Display.Color.GetColor(r,gv,b));
+      g.fillRect(0,y,W,1);
+    }
+
+    // ------------------------------------------------------------------
+    // FLOOR: warm terracotta wood planks (groundY → H)
+    // Plank height 12px, alternating tones, 1px separator
+    // ------------------------------------------------------------------
+    const plankH=12;
+    const plankA=0xc4855a;
+    const plankB=0xb87a50;
+    const sep=0xa06840;
+    for(let py=groundY;py<H;py+=plankH+1){
+      const alt=Math.floor((py-groundY)/(plankH+1))%2===0;
+      g.fillStyle(alt?plankA:plankB);
+      g.fillRect(0,py,W,plankH);
+      g.fillStyle(sep);
+      g.fillRect(0,py+plankH,W,1);
+    }
+
+    // ------------------------------------------------------------------
+    // AMBIENT LIGHT — soft god-ray blobs (rgba 255,240,200 @ 0.06)
+    // 3 large circles suggesting window light
+    // ------------------------------------------------------------------
+    // Upper-left window glow
+    g.fillStyle(0xfff0c8,0.06);g.fillCircle(120,80,310);
+    // Upper-right window glow
+    g.fillStyle(0xfff0c8,0.06);g.fillCircle(W-140,70,280);
+    // Upper-center ceiling warmth
+    g.fillStyle(0xfff0c8,0.04);g.fillCircle(W/2,0,230);
+
+    // ------------------------------------------------------------------
+    // WOODEN BEAM / SHELF — anchors the room at y=60, full width, 4px
+    // ------------------------------------------------------------------
+    g.fillStyle(0x8a6040);
+    g.fillRect(0,60,W,4);
+    // Subtle shadow below beam
+    g.fillStyle(0x000000,0.06);
+    g.fillRect(0,64,W,3);
+
+    // ------------------------------------------------------------------
+    // POTTED PLANT — far right, near ground
+    // Pot: small rectangle; leaves: 4 triangle/circle blobs
+    // ------------------------------------------------------------------
+    const px=W-52,potTop=groundY-38;
+    // Pot body
+    g.fillStyle(0x6a4020);
+    g.fillRect(px-14,potTop,28,36);
+    // Pot rim highlight
+    g.fillStyle(0x8a5830);
+    g.fillRect(px-16,potTop-4,32,6);
+    // Leaves (4 rough blobs)
+    g.fillStyle(0x4a8a3a);
+    g.fillCircle(px,potTop-22,16);
+    g.fillCircle(px-14,potTop-16,12);
+    g.fillCircle(px+14,potTop-14,11);
+    g.fillCircle(px-4,potTop-36,10);
+    // Stem
+    g.fillStyle(0x3a5a2a);
+    g.fillRect(px-2,potTop-22,4,22);
+
+    // ------------------------------------------------------------------
+    // YOGA MAT — portrait orientation, centered, on the floor
+    // 160×400px, base #e07840, border #b85a20, ribbing, OM arc
+    // ------------------------------------------------------------------
+    const matW=160,matH=400;
+    const matX=W/2-matW/2;
+    const matY=groundY-matH; // mat sits on the floor
+
+    // Mat base
+    g.fillStyle(0xe07840);
+    g.fillRect(matX,matY,matW,matH);
+
+    // Mat border (2px)
+    g.lineStyle(2,0xb85a20,1);
+    g.strokeRect(matX,matY,matW,matH);
+
+    // Lengthwise ribbing — every 4px, a 1px dark line across mat width
+    // Using fillRect for precise control
+    g.fillStyle(0x000000,0.04);
+    for(let ry=matY+4;ry<matY+matH;ry+=4){
+      g.fillRect(matX,ry,matW,1);
+    }
+
+    // OM circle in mat center — simple arc stroke at low alpha
+    const omX=W/2, omY=matY+matH/2;
+    g.lineStyle(2,0xb85a20,0.12);
+    g.strokeCircle(omX,omY,22);
+    // Inner smaller circle for layering depth
+    g.lineStyle(1,0xb85a20,0.08);
+    g.strokeCircle(omX,omY,14);
   }
 
   // ---- MENTOR ----
@@ -398,20 +495,6 @@ class Game extends Phaser.Scene {
     const g=this.gUI;g.clear();if(this.st>=ST.COMPLETE)return;
     const v=SEQ[this.vi];if(!v)return;
     const required=v.keys;
-    // Draw small key indicators near the combo text
-    const allKeys=['Q','W','E','A','D'];
-    const kx=W/2, ky=GND+20;
-    const positions={Q:{x:kx-50,y:ky},W:{x:kx-25,y:ky},E:{x:kx,y:ky},A:{x:kx+25,y:ky},D:{x:kx+50,y:ky}};
-
-    // Instead, show which keys are correct/held above the combo text
-    for(const k of allKeys){
-      const isRequired=required.includes(k);
-      const isHeld=this.keys[k];
-      if(!isRequired)continue;
-      // Green ring if held, red if not
-      // (the combo text already shows the keys, so we just color the key boxes below the mat)
-    }
-
     // Show correct/incorrect feedback on combo text color
     if(this.st===ST.FLOW||this.st===ST.HOLD){
       const correct=this.isCorrect();
@@ -539,7 +622,7 @@ class Game extends Phaser.Scene {
   }
 }
 
-new Phaser.Game({type:Phaser.AUTO,width:W,height:H,backgroundColor:'#1a2a1a',
+new Phaser.Game({type:Phaser.AUTO,width:W,height:H,backgroundColor:'#e8d8c4',
   scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH},scene:[Game]});
 </script>
 </body>
